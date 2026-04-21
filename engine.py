@@ -68,6 +68,45 @@ def fgsm_attack(original_tensor, model_tensor, epsilon=0.05):
 
     return perturbed_tensor
 
+def pgd_attack(original_tensor, model_tensor, epsilon=0.1, alpha=0.005, iterations=50):
+    # Load model and get prediction from resized tensor
+    model = load_model()
+    with torch.no_grad():
+        output = model(model_tensor)
+    predicted_class = output.argmax(dim=1)
+
+    # Original tensor is our fist adversarial example
+    perturbed_tensor = original_tensor.clone()
+
+    for i in range(iterations):
+        # Tracking the gradients on the full size tensor
+        perturbed_tensor.requires_grad = True
+
+        # Run through the model at req size (224x224)
+        output_p = model(torch.nn.functional.interpolate(
+            perturbed_tensor, size=(224, 224)
+        ))
+
+        # Loss calculation
+        loss = torch.nn.CrossEntropyLoss()(output_p, predicted_class)
+
+        # Backpropagate
+        model.zero_grad()
+        loss.backward()
+
+        # Small step towards gradient direction
+        with torch.no_grad():
+            perturbed_tensor = perturbed_tensor + alpha * perturbed_tensor.grad.sign()
+
+            # Clamping so it does not drift far from the original image
+            perturbation = torch.clamp(perturbed_tensor - original_tensor, -epsilon, epsilon)
+            perturbed_tensor = original_tensor + perturbation
+
+            # Clamping to valid pixel range
+            perturbed_tensor = torch.clamp(perturbed_tensor, 0, 1)
+
+    return perturbed_tensor
+
 def save_image(perturbed_tensor, output_path):
     # Removing the batch dimension
     tensor = perturbed_tensor.squeeze(0)
