@@ -1,5 +1,6 @@
 import torch
 import torchvision.transforms as transforms
+import torch.nn.functional as F
 from torchvision import models
 from PIL import Image
 
@@ -7,16 +8,25 @@ def load_image(image_path):
     # Using pillow to open the needed image from disk
     image= Image.open(image_path).convert('RGB')
 
+    # Keep track of the original image size for later use
+    original_size = image.size
+
     # Definition of tensor conversion needed for PyTorch models
     transform = transforms.Compose ([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
     ])
 
-    # Applying the defined transformation to the image and adding a batch dimension
-    tensor = transform(image).unsqueeze(0)
+    # Transforming the original image just to tensor without resizing
+    original_transform = transforms.Compose([
+        transforms.ToTensor()
+    ])
+    
+    # Creating both tensors
+    model_tensor = transform(image).unsqueeze(0)
+    original_tensor = original_transform(image).unsqueeze(0)
 
-    return tensor
+    return original_tensor, model_tensor, original_size
 
 def load_model():
     # Loadimg a pretrained ResNet50 model from torchvision
@@ -27,31 +37,33 @@ def load_model():
 
     return model
 
-def fgsm_attack(image_tensor, epsilon=0.01):
-    # PyTorch tracks the gradients for this tensor
-    image_tensor.requires_grad = True
-
-    # Loading the pretrained model and recieving a prediction for the input image
-    model= load_model()
-    output = model(image_tensor)
-
-    # The predicted class is the one with the highest score
+def fgsm_attack(original_tensor, model_tensor, epsilon=0.05):
+    # Load model amd get prediction from resized tensor
+    model=load_model()
+    with torch.no_grad():
+        output = model(model_tensor)
     predicted_class = output.argmax(dim=1)
 
-    # Calculating the loss
-    loss = torch.nn.CrossEntropyLoss()(output, predicted_class)
+    # Tracking the gradients on the full size tensor
+    original_tensor.requires_grad = True
 
-    # Backpropagating the loss to get the gradients of the input image
+    # Run the original tensor through the model so we don't need a resize for the gradient calculation
+    output_original = model(torch.nn.functional.interpolate(
+        original_tensor, size=(224, 224)
+    ))
+
+    # Calculating the loss
+    loss = torch.nn.CrossEntropyLoss()(output_original, predicted_class)
+
+    # Backpropagate
     model.zero_grad()
     loss.backward()
 
-    # Collecting the sign of the gradients
-    gradient_sign=image_tensor.grad.sign()
+    # Getting the gradient sign from the original tensor
+    gradient_sign=original_tensor.grad.sign()
 
-    # Creating the adversarial image
-    perturbed_tensor = image_tensor + epsilon * gradient_sign
-
-    # Clamping values to valid image range
+    # Apply adversions at full res
+    perturbed_tensor = original_tensor + epsilon * gradient_sign
     perturbed_tensor=torch.clamp(perturbed_tensor, 0, 1)
 
     return perturbed_tensor
